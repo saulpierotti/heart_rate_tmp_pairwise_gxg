@@ -357,15 +357,18 @@ process fit_mixed_model {
         )
 
     output:
-        path "${meta.id}.mm_fit.rds"
+        tuple(
+            val(meta),
+            path("${meta.id}.mm_fit.rds"),
+        )
 
     script:
         """
         #!/usr/bin/env Rscript
 
         qtl_matrices <- readRDS("${qtl_matrices}")
-        X <- qtl_matrices["X"]]
-        y <- qtl_matrices["y"]]
+        X <- qtl_matrices[["X"]]
+        y <- qtl_matrices[["y"]]
         K_list <- qtl_matrices[["K_list"]]
         fit <- gaston::lmm.aireml(
             Y = y,
@@ -375,6 +378,201 @@ process fit_mixed_model {
         )
 
         saveRDS(fit, "${meta.id}.mm_fit.rds")
+        """
+}
+
+process decorrelate_matrices {
+    label "r_tidyverse_datatable"
+    tag "${meta.id}"
+
+    input:
+        tuple(
+            val(meta),
+            path(qtl_matrices),
+            path(mixed_model)
+        )
+
+    output:
+        tuple(
+            val(meta),
+            path("${meta.id}.mm_matrices.rds")
+        )
+
+    script:
+        """
+        #!/usr/bin/env Rscript
+
+        qtl_matrices <- readRDS("${qtl_matrices}")
+        fit <- readRDS("${mixed_model}")
+
+        X <- qtl_matrices[["X"]]
+        y <- qtl_matrices[["y"]]
+        K_list <- qtl_matrices[["K_list"]]
+        sigma <- fit[["sigma2"]]
+        tau <- fit[["tau"]]
+        names(tau) <- names(K_list)
+        sigma_tot <- sigma + sum(tau)
+        var_explained <- lapply(tau, function(x){x / sigma_tot})
+        # residual variance-covariance matrix
+        V <- Reduce(
+            "+", lapply(1:length(K_list), function(i){tau[[i]] * K_list[[i]]})
+        ) + diag(
+            sigma, dim(K_list[[1]])
+        )
+        L <- t(chol(V)) # R returns the upper Cholesky triangle
+        colnames(L) <- colnames(K_list[[1]])
+        rownames(L) <- rownames(K_list[[1]])
+        # remove covariance structure
+        y.mm <- forwardsolve(L, y)
+        X.mm <- forwardsolve(L, X)
+        names(y.mm) <- names(y)
+        rownames(X.mm) <- rownames(X)
+        colnames(X.mm) <- colnames(X)
+        res <- list(
+            X.mm = X.mm,
+            y.mm = y.mm
+        )
+
+        saveRDS(res, "${meta.id}.mm_matrices.rds")
+        """
+}
+
+process fit_lm {
+    label "r_tidyverse_datatable"
+    tag "${meta.id}"
+
+    input:
+        tuple(
+            val(meta),
+            path(mm_matrices_full),
+            path(mm_matrices_reduced)
+        )
+
+    output:
+        tuple(
+            val(meta),
+            path("${meta.id}.lm_fit.rds")
+        )
+
+    script:
+        """
+        #!/usr/bin/env Rscript
+
+        mm_mat_full <- readRDS("${mm_matrices_full}")
+        mm_mat_red <- readRDS("${mm_matrices_reduced}")
+        X.mm <- mm_mat_full[["X.mm"]]
+        X_reduced.mm <- mm_mat_red[["X.mm"]]
+        y.mm <- mm_mat_full[["y.mm"]]
+        stopifnot(all.equal(y.mm, mm_mat_red[["y.mm"]]))
+        # intercept is already in X.mm so I don't put it again
+        fit <- lm(y.mm ~ 0 + ., data = as.data.frame(X.mm))
+        fit_reduced <- lm(y.mm ~ 0 + ., data = as.data.frame(X_reduced.mm))
+        ll_fit  <- logLik(fit)
+        ll_reduced  <- logLik(fit_reduced)
+        # likelyhood ratio test, 2 * (L - L0) is chi^2-distributed
+        lrt_chisq <- 2 * as.numeric(ll_fit - ll_reduced)
+        lrt_df <- attributes(ll_fit)[["df"]] - attributes(ll_reduced)[["df"]]
+        pval <- pchisq(lrt_chisq, df = lrt_df, lower.tail = FALSE)
+        ret <- list(
+            locus_id1 = "${meta.locus_id1}",
+            locus_id2 = "${meta.locus_id2}",
+            model = "${meta.model}",
+            reduced_model = "${meta.reduced_model}",
+            lrt_chisq = lrt_chisq,
+            lrt_df = lrt_df,
+            pval = pval,
+            fit = fit
+        )
+
+        saveRDS(ret, "${meta.id}.lm_fit.rds")
+        """
+}
+
+process fit_lm_perm {
+    label "r_tidyverse_datatable"
+    tag "${meta.id}"
+
+    input:
+        tuple(
+            val(meta),
+            path(mm_matrices_full),
+            path(mm_matrices_reduced),
+            path(pheno_covar),
+            val(seed)
+        )
+
+    output:
+        tuple(
+            val(meta),
+            path("${meta.id}.lm_fit.rds")
+        )
+
+    script:
+        """
+        #!/usr/bin/env Rscript
+
+        library("data.table")
+
+        mm_mat_full <- readRDS("${mm_matrices_full}")
+        mm_mat_red <- readRDS("${mm_matrices_reduced}")
+        pheno_covar <- fread("${pheno_covar}")
+        X.mm <- mm_mat_full[["X.mm"]]
+        X_reduced.mm <- mm_mat_red[["X.mm"]]
+        y.mm <- mm_mat_full[["y.mm"]]
+        stopifnot(all.equal(rownames(X.mm), rownames(X_reduced.mm)))
+        stopifnot(all.equal(y.mm, mm_mat_red[["y.mm"]]))
+        pheno_covar <- pheno_covar[match(pheno_covar[["full_id"]], rownames(X.mm))]
+        stopifnot(pheno_covar[["full_id"]], rownames(X.mm))
+        # intercept is already in X.mm so I don't put it again
+        fit <- lm(y.mm ~ 0 + ., data = as.data.frame(X.mm))
+        fit_reduced <- lm(y.mm ~ 0 + ., data = as.data.frame(X_reduced.mm))
+        ll_fit  <- logLik(fit)
+        ll_reduced  <- logLik(fit_reduced)
+        # likelyhood ratio test, 2 * (L - L0) is chi^2-distributed
+        lrt_chisq <- 2 * as.numeric(ll_fit - ll_reduced)
+        lrt_df <- attributes(ll_fit)[["df"]] - attributes(ll_reduced)[["df"]]
+        pval <- pchisq(lrt_chisq, df = lrt_df, lower.tail = FALSE)
+        ret <- list(
+            locus_id1 = "${meta.locus_id1}",
+            locus_id2 = "${meta.locus_id2}",
+            model = "${meta.model}",
+            reduced_model = "${meta.reduced_model}",
+            permutation_seed = ${seed},
+            lrt_chisq = lrt_chisq,
+            lrt_df = lrt_df,
+            pval = pval,
+            fit = fit
+        )
+
+        saveRDS(ret, "${meta.id}.lm_fit.rds")
+        """
+}
+
+process get_result_table {
+    label "r_tidyverse_datatable"
+
+    input:
+        path lm_fits
+
+    output:
+        path "results.csv.gz"
+
+    script:
+        """
+        #!/usr/bin/env Rscript
+
+        library("data.table")
+
+        the_files <- list.files(pattern = ".*.lm_fit.rds")
+        stopifnot(length(the_files) == ${lm_fits.size()})
+
+        read_file <- function(f) {
+            l <- readRDS(f)
+            l[names(l) != "fit"]
+        }
+
+        df <- lapply(the_files, read_file) |> rbindlist()
+        fwrite(ret, "results.csv.gz")
         """
 }
 
@@ -399,6 +597,13 @@ workflow {
             return ( it )
         }
         .set { qtl_models }
+    get_qtl_tests_and_models.out.tests
+        .splitCsv ( header: true )
+        .map {
+            it.id = it.locus_id1 + "_" + it.locus_id2 + "_" + it.model + "_" + it.reduced_model
+            return ( it )
+        }
+        .set { qtl_tests }
     make_freq ( params.freq )
     make_pgen ( params.vcf )
     qtl_pairs.combine ( make_pgen.out ).combine ( make_freq.out ).set { make_grm_in_ch }
@@ -417,4 +622,19 @@ workflow {
         .filter { meta, qtl_mat -> meta.model == "gxe" }
         .set { fit_mixed_model_in_ch }
     fit_mixed_model ( fit_mixed_model_in_ch )
+    fit_mixed_model.out
+        .map { meta, mm -> [[meta.locus_id1, meta.locus_id2], mm] }
+        .combine ( get_qtl_matrices.out.map { meta, qtl_mat -> [[meta.locus_id1, meta.locus_id2], meta, qtl_mat] }, by: 0 )
+        .map { match_tuple, mm, meta, qtl_mat -> [meta, qtl_mat, mm] }
+        .set { decorrelate_matrices_in_ch }
+    decorrelate_matrices ( decorrelate_matrices_in_ch )
+    qtl_tests.map { meta -> [[meta.locus_id1, meta.locus_id2, meta.model], meta] }.set { full_models }
+    qtl_tests.map { meta -> [[meta.locus_id1, meta.locus_id2, meta.reduced_model], meta] }.set { reduced_models }
+    decorrelate_matrices.out.map { meta, mm_mat -> [[meta.locus_id1, meta.locus_id2, meta.model], meta, mm_mat] }.set { mm_mat_to_merge }
+    full_models.combine ( mm_mat_to_merge, by: 0 ).map { match_tuple, meta1, meta2, mm_mat -> [meta1, mm_mat]}.set { full_models_mm_mat }
+    reduced_models.combine ( mm_mat_to_merge, by: 0 ).map { match_tuple, meta1, meta2, mm_mat -> [meta1, mm_mat]}.set { reduced_models_mm_mat }
+    full_models_mm_mat.combine ( reduced_models_mm_mat, by: 0 ).set { fit_lm_in_ch }
+    fit_lm ( fit_lm_in_ch )
+    fit_lm.out.map { meta, fit -> fit }.collect().set { get_result_table_in_ch }
+    get_result_table ( get_result_table_in_ch )
 }
