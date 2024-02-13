@@ -512,6 +512,7 @@ process fit_lm_perm {
         #!/usr/bin/env Rscript
 
         library("data.table")
+        set.seed(${seed})
 
         mm_mat_full <- readRDS("${mm_matrices_full}")
         mm_mat_red <- readRDS("${mm_matrices_reduced}")
@@ -521,8 +522,14 @@ process fit_lm_perm {
         y.mm <- mm_mat_full[["y.mm"]]
         stopifnot(all.equal(rownames(X.mm), rownames(X_reduced.mm)))
         stopifnot(all.equal(y.mm, mm_mat_red[["y.mm"]]))
-        pheno_covar <- pheno_covar[match(pheno_covar[["full_id"]], rownames(X.mm))]
-        stopifnot(pheno_covar[["full_id"]], rownames(X.mm))
+        pheno_covar <- pheno_covar[match(rownames(X.mm), pheno_covar[["full_id"]])]
+        stopifnot(all(pheno_covar[["full_id"]] == rownames(X.mm)))
+        pheno_covar[, n := 1:.N]
+        new_order <- pheno_covar[, .(n, n_new = sample(n)), by = c("cross_id", "temperature")][order(n), n_new]
+        y.mm <- y.mm[new_order]
+        stopifnot(
+            all(pheno_covar[new_order, sprintf("%s_%s", cross_id, temperature)] == pheno_covar[, sprintf("%s_%s", cross_id, temperature)])
+        )
         # intercept is already in X.mm so I don't put it again
         fit <- lm(y.mm ~ 0 + ., data = as.data.frame(X.mm))
         fit_reduced <- lm(y.mm ~ 0 + ., data = as.data.frame(X_reduced.mm))
@@ -572,7 +579,35 @@ process get_result_table {
         }
 
         df <- lapply(the_files, read_file) |> rbindlist()
-        fwrite(ret, "results.csv.gz")
+        fwrite(df, "results.csv.gz")
+        """
+}
+
+process get_result_table_perm {
+    label "r_tidyverse_datatable"
+
+    input:
+        path lm_fits
+
+    output:
+        path "results_permutations.csv.gz"
+
+    script:
+        """
+        #!/usr/bin/env Rscript
+
+        library("data.table")
+
+        the_files <- list.files(pattern = ".*.lm_fit.rds")
+        stopifnot(length(the_files) == ${lm_fits.size()})
+
+        read_file <- function(f) {
+            l <- readRDS(f)
+            l[names(l) != "fit"]
+        }
+
+        df <- lapply(the_files, read_file) |> rbindlist()
+        fwrite(df, "results_permutations.csv.gz")
         """
 }
 
@@ -635,6 +670,21 @@ workflow {
     reduced_models.combine ( mm_mat_to_merge, by: 0 ).map { match_tuple, meta1, meta2, mm_mat -> [meta1, mm_mat]}.set { reduced_models_mm_mat }
     full_models_mm_mat.combine ( reduced_models_mm_mat, by: 0 ).set { fit_lm_in_ch }
     fit_lm ( fit_lm_in_ch )
+    Channel.of ( 1..params.n_perm ).set { perm_seeds }
+    fit_lm_in_ch
+        .combine ( read_pheno_covar.out )
+        .combine ( perm_seeds )
+        .map {
+            meta, mm_mat1, mm_mat2, pheno_covar, seed ->
+            newmeta = meta.clone()
+            newmeta.id = meta.locus_id1 + "_" + meta.locus_id2 + "_" + meta.model + "_" + meta.reduced_model + "_perm" + seed
+            newmeta.seed = seed
+            [newmeta, mm_mat1, mm_mat2, pheno_covar, seed] 
+        }
+        .set { fit_lm_perm_in_ch }
+    fit_lm_perm ( fit_lm_perm_in_ch )
     fit_lm.out.map { meta, fit -> fit }.collect().set { get_result_table_in_ch }
+    fit_lm_perm.out.map { meta, fit -> fit }.collect().set { get_result_table_perm_in_ch }
     get_result_table ( get_result_table_in_ch )
+    get_result_table_perm ( get_result_table_perm_in_ch )
 }
