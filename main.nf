@@ -89,7 +89,8 @@ process get_qtl_tests_and_models {
             data.table(model = names(formulas), k = ""),
             allow.cartesian = TRUE,
             by = "k"
-        )[, k := NULL][]
+        )
+        
 
         qtl_tests <- merge(
             qtls[, k := ""],
@@ -97,6 +98,10 @@ process get_qtl_tests_and_models {
             allow.cartesian = TRUE,
             by = "k"
         )[, k := NULL][]
+
+        qtls[, k := NULL]
+        qtl_models[, k := NULL]
+        qtl_tests[, k := NULL]
 
         fwrite(qtls, "qtl_pairs.csv.gz")
         fwrite(qtl_tests, "qtl_tests.csv.gz")
@@ -237,7 +242,10 @@ process get_qtl_matrices {
         )
 
     output:
-        path "${meta.id}.qtl_matrices.rds"
+        tuple(
+            val(meta),
+            path("${meta.id}.qtl_matrices.rds")
+        )
 
     script:
         """
@@ -339,53 +347,34 @@ process get_qtl_matrices {
 }
 
 process fit_mixed_model {
-    label "r_tidyverse_datatable"
+    label "r_gaston"
     tag "${meta.id}"
 
     input:
         tuple(
             val(meta),
-            path(grm_id),
-            path(grm_bin),
-            path(pheno_covar),
-            path(pgen),
-            path(psam),
-            path(pvar),
-            path(formulas)
+            path(qtl_matrices)
         )
 
     output:
-        path "${meta.id}.qtl_matrices.rds"
+        path "${meta.id}.mm_fit.rds"
 
     script:
         """
         #!/usr/bin/env Rscript
 
-        library("data.table")
-
-        qtl_list <- null_models[[i]]
-        X <- qtl_list[["X"]]
-        y <- qtl_list[["y"]]
-        K_list <- qtl_list[["K_list"]]
-        fit <- lmm.aireml(
+        qtl_matrices <- readRDS("${qtl_matrices}")
+        X <- qtl_matrices["X"]]
+        y <- qtl_matrices["y"]]
+        K_list <- qtl_matrices[["K_list"]]
+        fit <- gaston::lmm.aireml(
             Y = y,
             X = X,
             K = K_list,
-            verbose = FALSE,
-            ...
-        )
-        res <- list(
-            locus_id1 = qtl_list[["locus_id1"]],
-            locus_id2 = qtl_list[["locus_id2"]],
-            chr1 = qtl_list[["chr1"]],
-            chr2 = qtl_list[["chr2"]],
-            lead_snp_id1 = qtl_list[["lead_snp_id1"]],
-            lead_snp_id2 = qtl_list[["lead_snp_id2"]],
-            model = qtl_list[["model"]],
-            fit = fit
+            verbose = TRUE
         )
 
-        saveRDS(res, "${meta.id}.mm_fit.rds")
+        saveRDS(fit, "${meta.id}.mm_fit.rds")
         """
 }
 
@@ -406,7 +395,7 @@ workflow {
     get_qtl_tests_and_models.out.models
         .splitCsv ( header: true )
         .map {
-            it.id = it.locus_id1 + "_" + it.locus_id2 + "_" + "model"
+            it.id = it.locus_id1 + "_" + it.locus_id2 + "_" + it.model
             return ( it )
         }
         .set { qtl_models }
@@ -416,11 +405,16 @@ workflow {
     make_grm ( make_grm_in_ch )
     make_grm.out
         .map { meta, id, bin -> [[meta.locus_id1, meta.locus_id2], meta, id, bin] }
-        .combine ( qtl_models.map { meta -> [[meta.locus_id, meta.locus_id2,], meta] } )
-        .map { meta1, id, bin, meta2 -> [meta2, id, bin] }
+        .combine ( qtl_models.map { meta -> [[meta.locus_id1, meta.locus_id2], meta] }, by: 0 )
+        .map { match_tuple, meta1, id, bin, meta2 -> [meta2, id, bin] }
         .combine ( read_pheno_covar.out )
         .combine ( make_pgen.out )
         .combine ( formulas )
         .set { get_qtl_matrices_in_ch }
-    //get_qtl_matrices ( get_qtl_matrices_in_ch )
+    get_qtl_matrices ( get_qtl_matrices_in_ch )
+    get_qtl_matrices.out
+        // fit variance components only on the background model
+        .filter { meta, qtl_mat -> meta.model == "gxe" }
+        .set { fit_mixed_model_in_ch }
+    fit_mixed_model ( fit_mixed_model_in_ch )
 }
