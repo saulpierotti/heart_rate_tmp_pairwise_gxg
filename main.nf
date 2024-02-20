@@ -126,7 +126,7 @@ process get_formulas_and_testing_scheme {
             gxe = formula(heart_rate ~ 1 + cross_id*temperature + phenotyping_plate_id + temperature + snp1 + snp2 + snp1:temperature + snp2:temperature)
         )
 
-        testing_scheme <- testing_scheme <- list(
+        testing_scheme <- list(
             model         = c("gxg_gxe", "gxgxe_gxg_gxe"),
             reduced_model = c("gxe", "gxg_gxe")
         )
@@ -217,10 +217,11 @@ process make_grm {
             --pvar $pvar \\
             --threads ${task.cpus} \\
             --memory ${task.memory.getMega()} \\
-            --not-chr "${meta.chr1} ${meta.chr2}" \
-            --read-freq $freq \
-            --out "grm_loco_${meta.id}" \
-            --maf 0.01 \
+            --not-chr "${meta.chr1} ${meta.chr2}" \\
+            --chr-set ${params.n_chr} \\
+            --read-freq $freq \\
+            --out "grm_loco_${meta.id}" \\
+            --maf 0.01 \\
             --make-rel bin
         """
 }
@@ -463,6 +464,7 @@ process fit_lm {
         X.mm <- mm_mat_full[["X.mm"]]
         X_reduced.mm <- mm_mat_red[["X.mm"]]
         y.mm <- mm_mat_full[["y.mm"]]
+        stopifnot(all.equal(rownames(X.mm), rownames(X_reduced.mm)))
         stopifnot(all.equal(y.mm, mm_mat_red[["y.mm"]]))
         # intercept is already in X.mm so I don't put it again
         fit <- lm(y.mm ~ 0 + ., data = as.data.frame(X.mm))
@@ -514,6 +516,12 @@ process fit_lm_perm {
         library("data.table")
         set.seed(${seed})
 
+        permute_mat <- function(X, new_order) {
+            cols_to_permute <- grepl("snp", colnames(X))
+            X[,cols_to_permute] <- X[new_order, cols_to_permute]
+            return(X)
+        }
+
         mm_mat_full <- readRDS("${mm_matrices_full}")
         mm_mat_red <- readRDS("${mm_matrices_reduced}")
         pheno_covar <- fread("${pheno_covar}")
@@ -525,8 +533,10 @@ process fit_lm_perm {
         pheno_covar <- pheno_covar[match(rownames(X.mm), pheno_covar[["full_id"]])]
         stopifnot(all(pheno_covar[["full_id"]] == rownames(X.mm)))
         pheno_covar[, n := 1:.N]
+        # permute within crosses and temperatures only columns containing genetic information
         new_order <- pheno_covar[, .(n, n_new = sample(n)), by = c("cross_id", "temperature")][order(n), n_new]
-        y.mm <- y.mm[new_order]
+        X.mm <- permute_mat(X.mm, new_order)
+        X_reduced.mm <- permute_mat(X_reduced.mm, new_order)
         stopifnot(
             all(pheno_covar[new_order, sprintf("%s_%s", cross_id, temperature)] == pheno_covar[, sprintf("%s_%s", cross_id, temperature)])
         )
@@ -676,7 +686,7 @@ workflow {
         .combine ( perm_seeds )
         .map {
             meta, mm_mat1, mm_mat2, pheno_covar, seed ->
-            newmeta = meta.clone()
+            def newmeta = meta.clone()
             newmeta.id = meta.locus_id1 + "_" + meta.locus_id2 + "_" + meta.model + "_" + meta.reduced_model + "_perm" + seed
             newmeta.seed = seed
             [newmeta, mm_mat1, mm_mat2, pheno_covar, seed] 
