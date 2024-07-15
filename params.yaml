@@ -1,5 +1,5 @@
 pheno: "/nfs/research/birney/users/saul/meta/heart_rate_tmp/lmm/f2_crosses/f2_crosses.pheno"
-covar: "/nfs/research/birney/users/saul/meta/heart_rate_tmp/lmm/f2_crosses/f2_crosses.covar"
+covar: "/nfs/research/birney/users/saul/meta/heart_rate_tmp/lmm/f2_crosses/f2_crosses.chr15_qtl.covar"
 qtls: "/nfs/research/birney/users/saul/meta/heart_rate_tmp/fine_mapped_regions/qtls.10_01_2024.tsv"
 freq: "/nfs/research/birney/users/saul/outputs/other/mikk_f0_allele_frequencies/mikk_f0_no_sister_lines_no_non_mikk.vcf.gz"
 vcf: "/nfs/research/birney/users/saul/outputs/heart_rate_tmp/f1_f2/stitchimpute/K16_nGen2_downsampled_truth_stitch_downsampling_snps/joint_stitch_output/vcf/joint_stitch_output.vcf.gz"

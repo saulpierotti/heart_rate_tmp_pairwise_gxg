@@ -43,7 +43,20 @@ process read_pheno_covar {
         # the kronoecker product creates id of the kind individual:temperature
         pheno[, full_id := sprintf("%s:%s", individual, temperature)]
 
-        covar <- covar[, .(individual = IID, phenotyping_plate_id, cross_id)]
+        covar <- covar[, .(
+            individual = IID,
+            phenotyping_plate_id,
+            cross_id,
+            chr15_qtl = ifelse(
+                chr15_qtl == 1, "het",
+                ifelse(
+                    chr15_qtl == 0, "hom_ref",
+                    ifelse(
+                        chr15_qtl == 2, "hom_alt", NA
+                    )
+                )
+            )
+        )]
 
         df <- merge(pheno, covar, by = "individual")
         fwrite(df, "pheno_covar.csv.gz")
@@ -121,9 +134,9 @@ process get_formulas_and_testing_scheme {
         #!/usr/bin/env Rscript
 
         formulas <- list(
-            gxgxe_gxg_gxe = formula(heart_rate ~ 1 + cross_id*temperature + phenotyping_plate_id + temperature + snp1 + snp1:temperature + snp2 + snp2:temperature + snp1:snp2 + snp1:snp2:temperature),
-            gxg_gxe = formula(heart_rate ~ 1 + cross_id*temperature + phenotyping_plate_id + temperature + snp1 + snp1:temperature + snp2 + snp2:temperature + snp1:snp2),
-            gxe = formula(heart_rate ~ 1 + cross_id*temperature + phenotyping_plate_id + temperature + snp1 + snp2 + snp1:temperature + snp2:temperature)
+            gxgxe_gxg_gxe = formula(heart_rate ~ 1 + cross_id*temperature + phenotyping_plate_id + temperature + snp1 + snp1:temperature + snp2 + snp2:temperature + snp1:snp2 + snp1:snp2:temperature + chr15_qtl*temperature),
+            gxg_gxe = formula(heart_rate ~ 1 + cross_id*temperature + phenotyping_plate_id + temperature + snp1 + snp1:temperature + snp2 + snp2:temperature + snp1:snp2 + chr15_qtl*temperature),
+            gxe = formula(heart_rate ~ 1 + cross_id*temperature + phenotyping_plate_id + temperature + snp1 + snp2 + snp1:temperature + snp2:temperature + chr15_qtl*temperature)
         )
 
         testing_scheme <- list(
@@ -327,6 +340,9 @@ process get_qtl_matrices {
         pheno_covar <- fread("${pheno_covar}")
         formulas <- readRDS("${formulas}")
         the_formula <- formulas[["${meta.model}"]]
+        if ( "${meta.locus_id1}" == "chr15_qtl" | "${meta.locus_id2}" == "chr15_qtl" ) {
+            the_formula <- update.formula(the_formula, . ~ . - chr15_qtl - chr15_qtl:temperature)
+        }
         snp1 <- get_snp("${meta.lead_snp_id1}")
         snp2 <- get_snp("${meta.lead_snp_id2}")
         df <- merge(pheno_covar, snp1[, .(snp1 = snp, individual)], by = "individual")
