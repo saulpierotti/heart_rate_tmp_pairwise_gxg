@@ -86,10 +86,6 @@ process get_qtl_tests_and_models {
         formulas <- readRDS("${formulas}")
         testing_scheme <- readRDS("${testing_scheme}") |> as.data.table()
 
-        qtls <- qtls[
-            qtl_type == "temp" & well_behaved == "yes",
-            .(locus_id1 = locus_id, chr1 = chr, lead_snp_id1 = lead_snp_id)
-        ]
         # all possible n choose 2 combinations of 2 loci
         all_comb <- combn(1:nrow(qtls), 2)
         qtls <- cbind(
