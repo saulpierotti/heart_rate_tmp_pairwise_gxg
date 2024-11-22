@@ -1,3 +1,4 @@
+outdir: "/nfs/research/birney/users/saul/outputs/heart_rate_tmp/f1_f2/pairwise_gxg_detection/for_manuscript/heart_rate_log"
 pheno: "/nfs/research/birney/users/saul/meta/heart_rate_tmp/lmm/f2_crosses/f2_crosses.pheno"
 covar: "/nfs/research/birney/users/saul/meta/heart_rate_tmp/lmm/f2_crosses/f2_crosses.chr15_qtl.covar"
 qtls: "/nfs/research/birney/users/saul/meta/heart_rate_tmp/fine_mapped_regions/qtls_simplified_08_11_2024.csv"
