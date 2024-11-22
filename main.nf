@@ -40,7 +40,7 @@ process read_pheno_covar {
             variable.name = "temperature"
         )
         pheno[, temperature := str_remove(temperature, "heart_rate_avg_")]
-        
+
         # a box-cox fit on heart_rate ~ temperature indicates ~0.14 as best lambda
         # so I use a transformation in the nearest integer lambda = 0, which is a log transformation
         # this is to reduce residual heteroschedasticity
@@ -88,7 +88,9 @@ process get_qtl_tests_and_models {
 
         library("data.table")
 
-        qtls <- fread("${qtls}")
+        qtls <- fread("${qtls}")[
+            , .(locus_id1 = locus_id, lead_snp_id1 = lead_snp_id, chr1 = chr)
+        ]
         formulas <- readRDS("${formulas}")
         testing_scheme <- readRDS("${testing_scheme}") |> as.data.table()
 
@@ -105,14 +107,13 @@ process get_qtl_tests_and_models {
             allow.cartesian = TRUE,
             by = "k"
         )
-        
 
         qtl_tests <- merge(
             qtls[, k := ""],
             testing_scheme[, k := ""],
             allow.cartesian = TRUE,
             by = "k"
-        )[, k := NULL][]
+        )[, k := NULL]
 
         qtls[, k := NULL]
         qtl_models[, k := NULL]
@@ -304,10 +305,10 @@ process get_qtl_matrices {
             # get a block diagonal square matrix with n_samples rows and columns and
             # 1 for samples in the same group, 0 for samples in different groups
             K <- Z %*% t(Z)
-            
+
             match_v <- match(rownames(model_frame), rownames(K))
             K <- K[match_v, match_v]
-            
+
             return(K)
         }
 
@@ -707,7 +708,7 @@ workflow {
             def newmeta = meta.clone()
             newmeta.id = meta.locus_id1 + "_" + meta.locus_id2 + "_" + meta.model + "_" + meta.reduced_model + "_perm" + seed
             newmeta.seed = seed
-            [newmeta, mm_mat1, mm_mat2, pheno_covar, seed] 
+            [newmeta, mm_mat1, mm_mat2, pheno_covar, seed]
         }
         .set { fit_lm_perm_in_ch }
     fit_lm_perm ( fit_lm_perm_in_ch )
